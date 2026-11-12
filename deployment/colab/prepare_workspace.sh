@@ -57,17 +57,21 @@ mkdir -p \
 log_ok "Persistent directories verified on Google Drive."
 
 # 4. Migrate legacy Google Drive model folders if present and new structure is empty
-if [[ -d "${DRIVE_MOUNT_DIR}/vc_models/pretrain" ]] && [[ -z "$(ls -A "${DRIVE_PERSIST_DIR}/models/pretrained" 2>/dev/null || true)" ]]; then
-    log_info "Migrating existing pretrained weights from ${DRIVE_MOUNT_DIR}/vc_models/pretrain..."
-    cp -rn "${DRIVE_MOUNT_DIR}/vc_models/pretrain/"* "${DRIVE_PERSIST_DIR}/models/pretrained/" 2>/dev/null || true
-    log_ok "Pretrained weights migrated."
-fi
+for legacy_pretrain in "${DRIVE_MOUNT_DIR}/vc_models/pretrain" "${DRIVE_MOUNT_DIR}/voice-changer/server/pretrain"; do
+    if [[ -d "${legacy_pretrain}" ]] && [[ -z "$(ls -A "${DRIVE_PERSIST_DIR}/models/pretrained" 2>/dev/null || true)" ]]; then
+        log_info "Migrating existing pretrained weights from ${legacy_pretrain}..."
+        cp -rn "${legacy_pretrain}/"* "${DRIVE_PERSIST_DIR}/models/pretrained/" 2>/dev/null || true
+        log_ok "Pretrained weights migrated."
+    fi
+done
 
-if [[ -d "${DRIVE_MOUNT_DIR}/vc_models/model_dir" ]] && [[ -z "$(ls -A "${DRIVE_PERSIST_DIR}/models/custom" 2>/dev/null || true)" ]]; then
-    log_info "Migrating existing custom models from ${DRIVE_MOUNT_DIR}/vc_models/model_dir..."
-    cp -rn "${DRIVE_MOUNT_DIR}/vc_models/model_dir/"* "${DRIVE_PERSIST_DIR}/models/custom/" 2>/dev/null || true
-    log_ok "Custom models migrated."
-fi
+for legacy_custom in "${DRIVE_MOUNT_DIR}/vc_models/model_dir" "${DRIVE_MOUNT_DIR}/voice-changer/server/model_dir"; do
+    if [[ -d "${legacy_custom}" ]] && [[ -z "$(ls -A "${DRIVE_PERSIST_DIR}/models/custom" 2>/dev/null || true)" ]]; then
+        log_info "Migrating existing custom models from ${legacy_custom}..."
+        cp -rn "${legacy_custom}/"* "${DRIVE_PERSIST_DIR}/models/custom/" 2>/dev/null || true
+        log_ok "Custom models migrated."
+    fi
+done
 
 # 5. Retrieve or update the customized Voice Changer repository on local SSD
 if [[ ! -d "${COLAB_WORKSPACE_DIR}/.git" ]]; then
