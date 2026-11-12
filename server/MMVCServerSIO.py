@@ -1,11 +1,21 @@
 import sys
-
-from distutils.util import strtobool
 from datetime import datetime
 import socket
 import platform
 import os
 import argparse
+
+
+def strtobool(val: str | bool) -> int:
+    if isinstance(val, bool):
+        return 1 if val else 0
+    val_lower = str(val).strip().lower()
+    if val_lower in ("y", "yes", "t", "true", "on", "1"):
+        return 1
+    elif val_lower in ("n", "no", "f", "false", "off", "0"):
+        return 0
+    raise ValueError(f"invalid truth value {val!r}")
+
 from Exceptions import WeightDownladException
 from downloader.SampleDownloader import downloadInitialSamples
 from downloader.WeightDownloader import downloadWeight
@@ -67,6 +77,7 @@ def setupArgParser():
 
     parser.add_argument("--host", type=str, default='127.0.0.1', help="IP address of the network interface to listen for HTTP connections. Specify 0.0.0.0 to listen on all interfaces.")
     parser.add_argument("--allowed-origins", action='append', default=[], help="List of URLs to allow connection from, i.e. https://example.com. Allows http(s)://127.0.0.1:{port} and http(s)://localhost:{port} by default.")
+    parser.add_argument("--reload", type=strtobool, default=False, help="Enable uvicorn auto-reload (default: False)")
 
     return parser
 
@@ -127,7 +138,7 @@ def localServer(logLevel: str = "critical", key_path: str | None = None, cert_pa
             f"{os.path.basename(__file__)[:-3]}:app_socketio",
             host=HOST,
             port=int(PORT),
-            reload=False if hasattr(sys, "_MEIPASS") else True,
+            reload=False if hasattr(sys, "_MEIPASS") else bool(args.reload),
             ssl_keyfile=key_path,
             ssl_certfile=cert_path,
             log_level=logLevel,
@@ -250,19 +261,25 @@ if __name__ == "__main__":
             logger.error(f"[Voice Changer] Web Server(https) Launch Exception, {e}")
 
     else:
-        p = mp.Process(name="p", target=localServer, args=(args.logLevel,))
-        p.start()
-        try:
-            if sys.platform.startswith("win"):
-                process = subprocess.Popen([NATIVE_CLIENT_FILE_WIN, "--disable-gpu", "-u", f"http://localhost:{PORT}/"])
-                return_code = process.wait()
-                logger.info("client closed.")
-                p.terminate()
-            elif sys.platform.startswith("darwin"):
-                process = subprocess.Popen([NATIVE_CLIENT_FILE_MAC, "--disable-gpu", "-u", f"http://localhost:{PORT}/"])
-                return_code = process.wait()
-                logger.info("client closed.")
-                p.terminate()
+        if sys.platform.startswith("win") or sys.platform.startswith("darwin"):
+            p = mp.Process(name="p", target=localServer, args=(args.logLevel,))
+            p.start()
+            try:
+                if sys.platform.startswith("win"):
+                    process = subprocess.Popen([NATIVE_CLIENT_FILE_WIN, "--disable-gpu", "-u", f"http://localhost:{PORT}/"])
+                    return_code = process.wait()
+                    logger.info("client closed.")
+                    p.terminate()
+                elif sys.platform.startswith("darwin"):
+                    process = subprocess.Popen([NATIVE_CLIENT_FILE_MAC, "--disable-gpu", "-u", f"http://localhost:{PORT}/"])
+                    return_code = process.wait()
+                    logger.info("client closed.")
+                    p.terminate()
 
-        except Exception as e:
-            logger.error(f"[Voice Changer] Client Launch Exception, {e}")
+            except Exception as e:
+                logger.error(f"[Voice Changer] Client Launch Exception, {e}")
+        else:
+            try:
+                localServer(args.logLevel)
+            except Exception as e:
+                logger.error(f"[Voice Changer] Web Server(http) Launch Exception, {e}")

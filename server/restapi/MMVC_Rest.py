@@ -92,6 +92,7 @@ class MMVC_Rest:
                     name="static",
                 )
             else:
+                os.makedirs(voiceChangerParams.model_dir, exist_ok=True)
                 app_fastapi.mount(
                     f"/{voiceChangerParams.model_dir}",
                     StaticFiles(directory=voiceChangerParams.model_dir),

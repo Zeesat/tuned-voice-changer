@@ -75,3 +75,16 @@ beatrice_internal_api.cp310-win_amd64.pyd
 108_average_110b_10.bin
 
 server/model_dir_static/Beatrice-JVS
+
+# Deployment & Colab environment files (never commit secrets, weights, or runtime state)
+.env
+*.env
+!*.env.example
+deployment/colab/config.env
+server/tmp_dir/
+*.pid
+*.log
+*.pth
+*.pt
+*.onnx
+*.index
