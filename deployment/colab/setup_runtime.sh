@@ -121,8 +121,11 @@ uv pip install --python "${PY_BIN}" \
     "torchaudio==2.4.1+cu121"
 
 # 8. Stage 2 native extensions requiring --no-build-isolation
+# NOTE: PyPI sdist fairseq-0.12.2.tar.gz omits fairseq/clib/libbase/balanced_assignment.cpp
+# from MANIFEST.in. Setting READTHEDOCS=1 causes setup.py to skip unused C++ extensions (libbase)
+# while preserving full fairseq.checkpoint_utils needed by RVC / HuBERT.
 log_info "Installing pyworld==0.3.4 and fairseq==0.12.2 with --no-build-isolation..."
-uv pip install --python "${PY_BIN}" --no-build-isolation \
+READTHEDOCS=1 uv pip install --python "${PY_BIN}" --no-build-isolation \
     "setuptools<70.0.0" \
     "numpy==1.26.4" \
     "pyworld==0.3.4" \
@@ -134,7 +137,7 @@ if [[ ! -f "${REQ_FILE}" ]]; then
     exit 1
 fi
 log_info "Installing pinned dependency matrix from ${REQ_FILE}..."
-uv pip install --python "${PY_BIN}" --no-build-isolation --index-strategy unsafe-best-match -r "${REQ_FILE}"
+READTHEDOCS=1 uv pip install --python "${PY_BIN}" --no-build-isolation --index-strategy unsafe-best-match -r "${REQ_FILE}"
 
 # 10. Final verification
 log_info "Running post-installation verification check..."
