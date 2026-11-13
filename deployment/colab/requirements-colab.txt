@@ -19,8 +19,8 @@ scipy==1.11.4
 torch==2.4.1+cu121
 torchaudio==2.4.1+cu121
 
-# ONNX Runtime GPU & Graph Simplifier
-onnxruntime-gpu==1.18.1
+# ONNX Runtime GPU (1.19+ targets CUDA 12 natively on PyPI) & Graph Simplifier
+onnxruntime-gpu==1.19.2
 onnxsim==0.4.36
 
 # Speech Representation, Pitch Extraction & Vector Search

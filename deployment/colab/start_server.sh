@@ -70,9 +70,21 @@ if command -v fuser >/dev/null 2>&1 && fuser "${VC_PORT}/tcp" >/dev/null 2>&1; t
     "${SCRIPT_DIR}/stop_server.sh" || true
 fi
 
-# 3. Prepare directories & arguments
+# 3. Prepare directories, CUDA library paths & arguments
 mkdir -p "${SERVER_DIR}/tmp_dir" "${SERVER_DIR}/upload_dir"
 cd "${SERVER_DIR}"
+
+NVIDIA_LIB_PATHS="$("${PY_BIN}" - <<'PYEOF' 2>/dev/null || true
+import glob, os, site
+paths = []
+for sp in site.getsitepackages():
+    paths.extend(glob.glob(os.path.join(sp, "nvidia", "*", "lib")))
+print(":".join(paths))
+PYEOF
+)"
+if [[ -n "${NVIDIA_LIB_PATHS}" ]]; then
+    export LD_LIBRARY_PATH="${NVIDIA_LIB_PATHS}:${LD_LIBRARY_PATH:-}"
+fi
 
 SERVER_ARGS=(
     "MMVCServerSIO.py"

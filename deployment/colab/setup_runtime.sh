@@ -69,7 +69,9 @@ verify_environment() {
     if [[ ! -x "${py_bin}" ]]; then
         return 1
     fi
-    "${py_bin}" - <<'PYEOF'
+    local nv_libs
+    nv_libs="$("${py_bin}" -c 'import glob, os, site; print(":".join(p for sp in site.getsitepackages() for p in glob.glob(os.path.join(sp, "nvidia", "*", "lib"))))' 2>/dev/null || true)"
+    LD_LIBRARY_PATH="${nv_libs}:${LD_LIBRARY_PATH:-}" "${py_bin}" - <<'PYEOF'
 import sys
 assert sys.version_info[:2] == (3, 10), f"Expected Python 3.10, got {sys.version}"
 import numpy as np
@@ -78,6 +80,7 @@ import torch
 import torchaudio
 assert torch.cuda.is_available(), "torch.cuda.is_available() is False"
 import onnxruntime as ort
+assert ort.__version__.startswith("1.19."), f"Expected onnxruntime-gpu 1.19.x (CUDA 12), got {ort.__version__}"
 import fairseq
 import faiss
 import pyworld
