@@ -74,6 +74,28 @@ for legacy_custom in "${DRIVE_MOUNT_DIR}/vc_models/model_dir" "${DRIVE_MOUNT_DIR
 done
 
 # 5. Retrieve or update the customized Voice Changer repository on local SSD
+GIT_ASKPASS_SCRIPT=""
+cleanup_askpass() {
+    if [[ -n "${GIT_ASKPASS_SCRIPT}" ]] && [[ -f "${GIT_ASKPASS_SCRIPT}" ]]; then
+        rm -f "${GIT_ASKPASS_SCRIPT}"
+    fi
+}
+trap cleanup_askpass EXIT
+
+if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    GIT_ASKPASS_SCRIPT="/tmp/vc_git_askpass_$$.sh"
+    cat > "${GIT_ASKPASS_SCRIPT}" <<'ASKPASS_EOF'
+#!/usr/bin/env bash
+case "$1" in
+    *Username*) echo "x-access-token" ;;
+    *Password*) echo "${GITHUB_TOKEN}" ;;
+esac
+ASKPASS_EOF
+    chmod 700 "${GIT_ASKPASS_SCRIPT}"
+    export GIT_ASKPASS="${GIT_ASKPASS_SCRIPT}"
+    export GIT_TERMINAL_PROMPT=0
+fi
+
 if [[ ! -d "${COLAB_WORKSPACE_DIR}/.git" ]]; then
     log_info "Cloning ${REPOSITORY_URL} (ref: ${REPOSITORY_REF}) into ${COLAB_WORKSPACE_DIR}..."
     rm -rf "${COLAB_WORKSPACE_DIR}"
@@ -89,6 +111,8 @@ else
         git -C "${COLAB_WORKSPACE_DIR}" checkout "${REPOSITORY_REF}"
     fi
 fi
+cleanup_askpass
+unset GIT_ASKPASS GIT_TERMINAL_PROMPT
 
 CURRENT_COMMIT="$(git -C "${COLAB_WORKSPACE_DIR}" rev-parse --short HEAD)"
 log_ok "Repository ready at ${COLAB_WORKSPACE_DIR} (commit: ${CURRENT_COMMIT})."
@@ -194,6 +218,10 @@ if [[ "${AUTO_PROVISION_SLOT0}" == "true" ]]; then
 EOF
         log_ok "Slot 0 params.json generated."
     elif [[ -n "${PTH_FILE}" ]]; then
+        if grep -q '"modelType": "pyTorchRVCv2"' "${SLOT0_DIR}/params.json" 2>/dev/null && grep -q '"embChannels": 256' "${SLOT0_DIR}/params.json" 2>/dev/null; then
+            sed -i 's/"embChannels": 256/"embChannels": 768/' "${SLOT0_DIR}/params.json"
+            log_info "Updated Slot 0 params.json embChannels to 768 for pyTorchRVCv2."
+        fi
         log_ok "Slot 0 model verified: ${PTH_FILE} (index: ${IDX_FILE:-none})"
     fi
 fi
