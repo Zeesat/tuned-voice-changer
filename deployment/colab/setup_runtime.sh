@@ -100,7 +100,7 @@ fi
 
 # 6. Provision dedicated Python 3.10 virtual environment
 log_info "Provisioning Python 3.10 virtual environment at ${VC_ENV_DIR}..."
-uv venv "${VC_ENV_DIR}" --python 3.10 --seed
+uv venv "${VC_ENV_DIR}" --python 3.10 --seed --clear
 
 PY_BIN="${VC_ENV_DIR}/bin/python"
 
