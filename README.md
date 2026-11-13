@@ -1,3 +1,31 @@
+# Tuned Voice Changer (`Zeesat/tuned-voice-changer`)
+
+> **Customized Fork Notice:** This repository ([**Zeesat/tuned-voice-changer**](https://github.com/Zeesat/tuned-voice-changer)) is a customized clone/fork of the original upstream repository [**w-okada/voice-changer**](https://github.com/w-okada/voice-changer) (base commit [`d8ef157`](https://github.com/w-okada/voice-changer/commit/d8ef157)).
+
+## Customizations Included in This Fork
+
+- **Python & Linux Server Stability Fixes**:
+  - Replaced deprecated `distutils.util.strtobool` with a standard-library implementation across server modules (`strtobool` stdlib replacement).
+  - Added configurable `--reload` flag (disabled by default in production) and foreground execution on Linux (`MMVCServerSIO.py`).
+  - Added safe `os.makedirs(params.model_dir, exist_ok=True)` initialization before weight scanning.
+  - Resolved `uvicorn` access logger suppression typo in `server/voice_changer/utils/log_control.py`.
+- **Reproducible Google Colab GPU Deployment Suite (`deployment/colab/`)**:
+  - Automated runtime provisioning (`setup_runtime.sh`), workspace & symlink orchestration (`prepare_workspace.sh`), process lifecycle management (`start_server.sh`, `stop_server.sh`), and multi-probe validation (`healthcheck.sh`).
+  - Pinned Python 3.10 + CUDA 12.1 (`cu121`) dependency specification (`requirements-colab.txt`) and environment template (`config.env.example`).
+  - Google Drive persistence (`/content/drive/MyDrive/VoiceChanger`) for pretrained weights, custom RVC models, checkpoints, `.index` files, and `stored_setting.json` while keeping code and virtualenv execution on fast local SSD (`/content/`).
+- **Private Local Access via SSH & WSL Orchestration**:
+  - Private local access (`http://localhost:18888`) over SSH `LocalForward` through the Google Colab CLI runtime proxy without third-party public tunnels.
+  - Lifecycle management orchestrated from WSL Ubuntu via the `vc` CLI (`vc up`, `vc status`, `vc logs`, `vc connect`, `vc down`).
+
+## Documentation
+
+- [Audit Report (`docs/audit-report.md`)](docs/audit-report.md) — Phase 1 repository audit, defect analysis, and dependency compatibility matrix.
+- [Architecture Guide (`docs/architecture.md`)](docs/architecture.md) — Three-layer architecture (Source, Persistence, Execution) and SSH tunnel topology.
+- [Deployment Guide (`docs/deployment.md`)](docs/deployment.md) — Step-by-step setup and operational guide for Google Colab GPU + WSL Ubuntu orchestration.
+- [Troubleshooting Guide (`docs/troubleshooting.md`)](docs/troubleshooting.md) — Diagnostics and recovery procedures for runtime, audio, and SSH issues.
+
+---
+
 [日本語](/README.md) /
 [英語](/docs_i18n/README_en.md) /
 [韓国語](/docs_i18n/README_ko.md)/
