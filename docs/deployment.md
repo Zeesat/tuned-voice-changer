@@ -71,3 +71,18 @@ bash /content/voice-changer/deployment/colab/healthcheck.sh
 ├── configuration/       # Persisted stored_setting.json
 └── backups/             # Latest server logs and setting snapshots
 ```
+
+---
+
+## 5. Recommended Voice Changer Settings by GPU (`T4`, `L4`, `G4`, `A100`, `H100`)
+
+| Setting in Web UI | **Tesla T4** (`vc up --gpu T4`) | **NVIDIA L4 / G4** (`vc up --gpu L4`) | **NVIDIA A100 / H100** (`vc up --gpu A100`) | Notes |
+|---|---|---|---|---|
+| **Compute Units (Approx.)** | `~1.5 – 2.0 CU / hr` | `~4.5 – 5.0 CU / hr` | `~10.0 – 13.0+ CU / hr` | T4 for testing; L4/A100 for production. |
+| **F0 Det (Pitch Extractor)** | `rmvpe_onnx` *(or `fcpe`)* | `rmvpe_onnx` or `rmvpe` | `rmvpe` *(PyTorch FP16)* or `crepe_full` | `rmvpe_onnx` uses ONNX Runtime CUDA 12. |
+| **CHUNK (Input Chunk)** | **`192` – `256`** | **`128` – `192`** | **`96` – `128`** | Balances real-time latency against SSH TCP jitter. |
+| **EXTRA (Context Window)** | **`16384` – `32768`** | **`32768` – `65536`** | **`65536` – `131072`** | Higher `EXTRA` improves pitch stability and smoothness. |
+| **TUNE (Pitch Shift)** | `+12` *(Male → Zeta)* / `0` *(Female)* | `+12` *(Male → Zeta)* / `0` *(Female)* | `+12` *(Male → Zeta)* / `0` *(Female)* | Adjust by ±1–2 semitones for natural resonance. |
+| **INDEX (Feature Ratio)** | `0.30` – `0.50` | `0.40` – `0.60` | `0.50` – `0.65` | Uses FAISS `model.index` to match target timbre. |
+| **S.Thresh (Silence Gate)** | `0.00010` – `0.00050` | `0.00010` – `0.00050` | `0.00010` – `0.00050` | Suppresses idle microphone noise. |
+
