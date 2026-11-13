@@ -104,18 +104,24 @@ uv venv "${VC_ENV_DIR}" --python 3.10 --seed
 
 PY_BIN="${VC_ENV_DIR}/bin/python"
 
-# 7. Stage 1 build prerequisites (required for fairseq and pyworld C/Cython extensions)
-log_info "Installing Stage 1 build prerequisites (setuptools<70, wheel, cython<3, numpy==1.26.4)..."
+# 7. Stage 1 build prerequisites + PyTorch cu121 (required before fairseq and pyworld C/Cython extensions)
+log_info "Installing Stage 1 build prerequisites and PyTorch 2.4.1+cu121..."
 uv pip install --python "${PY_BIN}" \
+    --extra-index-url https://download.pytorch.org/whl/cu121 \
+    --index-strategy unsafe-best-match \
     "pip<24.1" \
     "setuptools<70.0.0" \
     "wheel" \
     "cython<3.0.0" \
-    "numpy==1.26.4"
+    "numpy==1.26.4" \
+    "torch==2.4.1+cu121" \
+    "torchaudio==2.4.1+cu121"
 
 # 8. Stage 2 native extensions requiring --no-build-isolation
 log_info "Installing pyworld==0.3.4 and fairseq==0.12.2 with --no-build-isolation..."
 uv pip install --python "${PY_BIN}" --no-build-isolation \
+    "setuptools<70.0.0" \
+    "numpy==1.26.4" \
     "pyworld==0.3.4" \
     "fairseq==0.12.2"
 
@@ -125,7 +131,7 @@ if [[ ! -f "${REQ_FILE}" ]]; then
     exit 1
 fi
 log_info "Installing pinned dependency matrix from ${REQ_FILE}..."
-uv pip install --python "${PY_BIN}" --no-build-isolation -r "${REQ_FILE}"
+uv pip install --python "${PY_BIN}" --no-build-isolation --index-strategy unsafe-best-match -r "${REQ_FILE}"
 
 # 10. Final verification
 log_info "Running post-installation verification check..."
