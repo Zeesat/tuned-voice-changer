@@ -1,202 +1,160 @@
 # Tuned Voice Changer (`Zeesat/tuned-voice-changer`)
 
-> **Customized Fork Notice:** This repository ([**Zeesat/tuned-voice-changer**](https://github.com/Zeesat/tuned-voice-changer)) is a customized clone/fork of the original upstream repository [**w-okada/voice-changer**](https://github.com/w-okada/voice-changer) (base commit [`d8ef157`](https://github.com/w-okada/voice-changer/commit/d8ef157)).
-
-## Customizations Included in This Fork
-
-- **Python & Linux Server Stability Fixes**:
-  - Replaced deprecated `distutils.util.strtobool` with a standard-library implementation across server modules (`strtobool` stdlib replacement).
-  - Added configurable `--reload` flag (disabled by default in production) and foreground execution on Linux (`MMVCServerSIO.py`).
-  - Added safe `os.makedirs(params.model_dir, exist_ok=True)` initialization before weight scanning.
-  - Resolved `uvicorn` access logger suppression typo in `server/voice_changer/utils/log_control.py`.
-- **Reproducible Google Colab GPU Deployment Suite (`deployment/colab/`)**:
-  - Automated runtime provisioning (`setup_runtime.sh`), workspace & symlink orchestration (`prepare_workspace.sh`), process lifecycle management (`start_server.sh`, `stop_server.sh`), and multi-probe validation (`healthcheck.sh`).
-  - Pinned Python 3.10 + CUDA 12.1 (`cu121`) dependency specification (`requirements-colab.txt`) and environment template (`config.env.example`).
-  - Google Drive persistence (`/content/drive/MyDrive/VoiceChanger`) for pretrained weights, custom RVC models, checkpoints, `.index` files, and `stored_setting.json` while keeping code and virtualenv execution on fast local SSD (`/content/`).
-- **Private Local Access via SSH & WSL Orchestration**:
-  - Private local access (`http://localhost:18888`) over SSH `LocalForward` through the Google Colab CLI runtime proxy without third-party public tunnels.
-  - Lifecycle management orchestrated from WSL Ubuntu via the `vc` CLI (`vc up`, `vc status`, `vc logs`, `vc connect`, `vc down`).
-
-## Documentation
-
-- [Audit Report (`docs/audit-report.md`)](docs/audit-report.md) — Phase 1 repository audit, defect analysis, and dependency compatibility matrix.
-- [Architecture Guide (`docs/architecture.md`)](docs/architecture.md) — Three-layer architecture (Source, Persistence, Execution) and SSH tunnel topology.
-- [Deployment Guide (`docs/deployment.md`)](docs/deployment.md) — Step-by-step setup and operational guide for Google Colab GPU + WSL Ubuntu orchestration.
-- [Troubleshooting Guide (`docs/troubleshooting.md`)](docs/troubleshooting.md) — Diagnostics and recovery procedures for runtime, audio, and SSH issues.
+> **Customized Fork Notice:** This repository ([**Zeesat/tuned-voice-changer**](https://github.com/Zeesat/tuned-voice-changer)) is a customized fork of [**w-okada/voice-changer**](https://github.com/w-okada/voice-changer) (base commit [`d8ef157`](https://github.com/w-okada/voice-changer/commit/d8ef157)).
+>
+> The original upstream README is preserved in full at [`README_ori.md`](README_ori.md).
 
 ---
 
-[日本語](/README.md) /
-[英語](/docs_i18n/README_en.md) /
-[韓国語](/docs_i18n/README_ko.md)/
-[中国語](/docs_i18n/README_zh.md)/
-[ドイツ語](/docs_i18n/README_de.md)/
-[アラビア語](/docs_i18n/README_ar.md)/
-[ギリシャ語](/docs_i18n/README_el.md)/
-[スペイン語](/docs_i18n/README_es.md)/
-[フランス語](/docs_i18n/README_fr.md)/
-[イタリア語](/docs_i18n/README_it.md)/
-[ラテン語](/docs_i18n/README_la.md)/
-[マレー語](/docs_i18n/README_ms.md)/
-[ロシア語](/docs_i18n/README_ru.md) \*日本語以外は機械翻訳です。
+## 1. Changes Made Compared to Upstream
 
-## VCClient
+All customizations focus on reproducible Google Colab GPU execution, Google Drive persistence, private SSH access, and WSL2 orchestration—without altering core RVC inference behavior:
 
-VCClient は、AI を用いてリアルタイム音声変換を行うソフトウェアです。
+- **Python 3.10+ & Linux Server Stability Fixes (`server/`)**:
+  - `server/MMVCServerSIO.py` & `server/restapi/MMVC_Rest.py`: Replaced deprecated `distutils.util.strtobool` with a standard-library implementation; added configurable `--reload` flag (disabled by default in production); enabled foreground execution on Linux; added `os.makedirs(params.model_dir, exist_ok=True)` before scanning weights.
+  - `server/mods/log_control.py`: Fixed `uvicorn` access logger suppression.
+- **Google Colab GPU Deployment Suite (`deployment/colab/`)**:
+  - `setup_runtime.sh`: Provisions `/content/vc_env` (Python 3.10 via `uv` with `--clear`), installs `torch` (`cu121`) and pinned ML dependencies with `--index-strategy unsafe-best-match`, sets `READTHEDOCS=1` for `fairseq` sdist builds, installs `onnxruntime-gpu==1.19.2` for CUDA 12, and exports NVIDIA `LD_LIBRARY_PATH` directories.
+  - `prepare_workspace.sh`: Verifies `/content/drive` mount, initializes persistent `/content/drive/MyDrive/VoiceChanger/` (`models/pretrained`, `models/custom`, `checkpoints`, `indexes`, `configuration`, `backups`), auto-migrates legacy Drive `voice-changer/server` weights if present, supports transient `GIT_ASKPASS` for private repo clones, and symlinks Drive storage into `/content/voice-changer/server/`.
+  - `start_server.sh`, `stop_server.sh`, `healthcheck.sh`: Clean process lifecycle management on `127.0.0.1:18888` and 7-point healthcheck verification.
+  - `requirements-colab.txt` & `config.env.example`: Verified dependency pins and environment configuration template.
+- **WSL2 Ubuntu Orchestration Suite (`wsl/`)**:
+  - `wsl/vc`: Single-entry CLI (`vc up`, `vc add-model`, `vc status`, `vc logs`, `vc connect`, `vc down`) managing Colab GPU sessions (`T4`, `A100`, `L4`, `G4`, `H100`), Drive mounting, workspace setup, SSH `LocalForward` (`http://localhost:18888`), and model uploads.
+  - `wsl/mount_drive.sh`, `wsl/launch_colab.sh`, `wsl/setup_and_run.sh`, `wsl/stop_colab.sh`, and `wsl/README.md`.
+- **Repository & Documentation (`docs/`, `.gitignore`, `.gitattributes`)**:
+  - Added [`docs/audit-report.md`](docs/audit-report.md), [`docs/architecture.md`](docs/architecture.md), [`docs/deployment.md`](docs/deployment.md) (including recommended UI settings per GPU tier), [`docs/troubleshooting.md`](docs/troubleshooting.md), and preserved [`README_ori.md`](README_ori.md).
+  - Enforced LF line endings for shell scripts via `.gitattributes` and excluded runtime artifacts/weights via `.gitignore`.
 
-## What's New!
+---
 
-- v.2.2.2-beta
-  - リリースエディション： std_win, std_mac, std_lin_aarch64
-  - v.2.2.2-betaよりエディション毎のサポートモデルが変わります（下記参照）。また、バージョンごとにリリースされるエディションが異なる場合があります。
-  - Beatrice v2.0.0-rc0 をサポート。
+## 2. New Computer Setup Guide (Windows + WSL2 Ubuntu)
 
-- v.2.1.3-alpha
+Follow these steps to set up a brand-new Windows machine from scratch and run Voice Changer on Google Colab GPU.
 
-  - ショートカットキー
-  - バッファの可視化
-  - currently only for rvc
+### Step 1: Prepare WSL2 Ubuntu (Windows PowerShell)
 
-- v.2.0.78-beta
+If WSL2 Ubuntu is not installed yet, open **PowerShell as Administrator** and run:
 
-  - bugfix: RVC モデルのアップロードエラーを回避
-  - ver.1.x との同時起動ができるようになりました。
-  - 選択できる chunk size を増やしました。
-
-- v.2.0.77-beta (only for RTX 5090, experimental)
-  - 関連モジュールを 5090 対応 (開発者が RTX5090 未所持のため、動作未検証)
-- v.2.0.76-beta
-  - new feature:
-    - Beatrice: 話者マージの実装
-    - Beatrice: オートピッチシフト
-  - bugfix:
-    - サーバモードのデバイス選択時の不具合対応
-- v.2.0.73-beta
-  - new feature:
-    - 編集した beatrice model のダウンロード
-  - bugfix:
-    - beatrice v2 の pitch, formant が反映されないバグを修正
-    - Applio の embedder を使用しているモデルの ONNX ができないバグを修正
-
-## エディション
-
-v2.2.1 以降は、エディションによりサポートする AI モデルが異なります。
-
-| edition | platform       | Support Model |     |
-| ------- | -------------- | ------------- | --- |
-| std     | win            | Beatrice      |     |
-| std     | mac(m1)        | Beatrice      |     |
-| std     | linux(x86-64)  | Beatrice      |     |
-| std     | linux(aarch64) | Beatrice      |     |
-| cuda    | win            | Beatrice, RVC |     |
-| onnx    | win            | Beatrice, RVC |     |
-| onnx    | mac(m1)        | Beatrice, RVC |     |
-
-## ダウンロードと関連リンク
-
-Windows 版、 M1 Mac 版は hugging face のリポジトリからダウンロードできます。
-
-- [VCClient のリポジトリ](https://huggingface.co/wok000/vcclient000/tree/main)
-- [Light VCClient for Beatrice v2 のリポジトリ](https://huggingface.co/wok000/light_vcclient_beatrice/tree/main)
-
-\*1 Linux はリポジトリを clone してお使いください。
-
-### 関連リンク
-
-- [Beatrice V2 トレーニングコードのリポジトリ](https://huggingface.co/fierce-cats/beatrice-trainer)
-- [Beatrice V2 トレーニングコード Colab 版](https://github.com/w-okada/beatrice-trainer-colab)
-
-### 関連ソフトウェア
-
-- [リアルタイムボイスチェンジャ VCClient](https://github.com/w-okada/voice-changer)
-- [読み上げソフトウェア TTSClient](https://github.com/w-okada/ttsclient)
-- [リアルタイム音声認識ソフトウェア ASRClient](https://github.com/w-okada/asrclient)
-
-## VC Client の特徴
-
-## 多様な AI モデルをサポート
-
-| AI モデル                                                                                                    | v.2       | v.1                  | ライセンス                                                                                 |
-| ------------------------------------------------------------------------------------------------------------ | --------- | -------------------- | ------------------------------------------------------------------------------------------ |
-| [RVC ](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/blob/main/docs/jp/README.ja.md) | supported | supported            | リポジトリを参照してください。                                                             |
-| [Beatrice v1](https://prj-beatrice.com/)                                                                     | n/a       | supported (only win) | [独自](https://github.com/w-okada/voice-changer/tree/master/server/voice_changer/Beatrice) |
-| [Beatrice v2](https://prj-beatrice.com/)                                                                     | supported | n/a                  | [独自](https://huggingface.co/wok000/vcclient_model/blob/main/beatrice_v2_beta/readme.md)  |
-| [MMVC](https://github.com/isletennos/MMVC_Trainer)                                                           | n/a       | supported            | リポジトリを参照してください。                                                             |
-| [so-vits-svc](https://github.com/svc-develop-team/so-vits-svc)                                               | n/a       | supported            | リポジトリを参照してください。                                                             |
-| [DDSP-SVC](https://github.com/yxlllc/DDSP-SVC)                                                               | n/a       | supported            | リポジトリを参照してください。                                                             |
-
-## スタンドアロン、ネットワーク経由の両構成をサポート
-
-ローカル PC で完結した音声変換も、ネットワークを介した音声変換もサポートしています。
-ネットワークを介した利用を行うことで、ゲームなどの高負荷なアプリケーションと同時に使用する場合に音声変換の負荷を外部にオフロードすることができます。
-
-![image](https://user-images.githubusercontent.com/48346627/206640768-53f6052d-0a96-403b-a06c-6714a0b7471d.png)
-
-## 複数プラットフォームに対応
-
-Windows, Mac(M1), Linux, Google Colab
-
-\*1 Linux はリポジトリを clone してお使いください。
-
-## REST API を提供
-
-各種プログラミング言語でクライアントを作成することができます。
-
-また、curl などの OS に組み込まれている HTTP クライアントを使って操作ができます。
-
-## トラブルシュート
-
-[通信編](tutorials/trouble_shoot_communication_ja.md)
-
-## 開発者の署名について
-
-本ソフトウェアは開発元の署名しておりません。下記のように警告が出ますが、コントロールキーを押しながらアイコンをクリックすると実行できるようになります。これは Apple のセキュリティポリシーによるものです。実行は自己責任となります。
-
-![image](https://user-images.githubusercontent.com/48346627/212567711-c4a8d599-e24c-4fa3-8145-a5df7211f023.png)
-
-## Acknowledgments
-
-- [立ちずんだもん素材](https://seiga.nicovideo.jp/seiga/im10792934)
-- [いらすとや](https://www.irasutoya.com/)
-- [つくよみちゃん](https://tyc.rei-yumesaki.net/)
-
-```
-  本ソフトウェアの音声合成には、フリー素材キャラクター「つくよみちゃん」が無料公開している音声データを使用しています。
-  ■つくよみちゃんコーパス（CV.夢前黎）
-  https://tyc.rei-yumesaki.net/material/corpus/
-  © Rei Yumesaki
+```powershell
+wsl --install -d Ubuntu
 ```
 
-- [あみたろの声素材工房](https://amitaro.net/)
-- [れぷりかどーる](https://kikyohiroto1227.wixsite.com/kikoto-utau)
+Reboot if prompted, launch **Ubuntu** from the Start Menu, and create your Linux username/password.
 
-## 利用規約
+Inside the **Ubuntu (WSL)** terminal, install base system tools:
 
-- リアルタイムボイスチェンジャーつくよみちゃんについては、つくよみちゃんコーパスの利用規約に準じ、次の目的で変換後の音声を使用することを禁止します。
-
+```bash
+sudo apt-get update && sudo apt-get install -y \
+  curl git openssh-client python3 ca-certificates
 ```
 
-■人を批判・攻撃すること。（「批判・攻撃」の定義は、つくよみちゃんキャラクターライセンスに準じます）
+### Step 2: Install `uv` and `google-colab-cli` (`colab`)
 
-■特定の政治的立場・宗教・思想への賛同または反対を呼びかけること。
+In **Ubuntu (WSL)**:
 
-■刺激の強い表現をゾーニングなしで公開すること。
+```bash
+# 1. Install uv
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source ~/.local/bin/env 2>/dev/null || export PATH="$HOME/.local/bin:$PATH"
 
-■他者に対して二次利用（素材としての利用）を許可する形で公開すること。
-※鑑賞用の作品として配布・販売していただくことは問題ございません。
+# 2. Install google-colab-cli with keyrings-alt for persistent OAuth token storage
+uv tool install google-colab-cli --with keyrings-alt==5.0.2
+
+# 3. Ensure ~/.local/bin is in PATH for future shells
+grep -qxF 'export PATH="$HOME/.local/bin:$PATH"' ~/.bashrc || \
+  echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+
+# 4. Verify installation
+colab version
 ```
 
-- リアルタイムボイスチェンジャーあみたろについては、あみたろの声素材工房様の次の利用規約に準じます。詳細は[こちら](https://amitaro.net/voice/faq/#index_id6)
+### Step 3: Authenticate Colab CLI & Create an SSH Key
 
+1. **Generate an SSH key** (used by `colab ssh` / `vc connect` to tunnel `localhost:18888` to Colab):
+
+   ```bash
+   ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
+   ```
+
+2. **Authenticate `colab` with your Google account** (triggers OAuth2 login in your browser or prints an auth URL):
+
+   ```bash
+   colab usage
+   ```
+
+   Follow the OAuth prompt and verify your Colab compute-unit balance prints cleanly.
+
+### Step 4: Clone the Repo & Install `wsl/` Scripts
+
+In **Ubuntu (WSL)**:
+
+```bash
+# 1. Clone this repository (keep a local copy for reference, or clone anywhere you prefer)
+mkdir -p ~/src ~/VSC/colab ~/.local/bin
+git clone https://github.com/Zeesat/tuned-voice-changer.git ~/src/tuned-voice-changer
+
+# 2. Copy the WSL orchestration scripts into ~/VSC/colab
+cp ~/src/tuned-voice-changer/wsl/* ~/VSC/colab/
+
+# 3. Ensure LF line endings, executable permissions, and symlink `vc` to PATH
+sed -i 's/\r$//' ~/VSC/colab/*.sh ~/VSC/colab/vc
+chmod +x ~/VSC/colab/*.sh ~/VSC/colab/vc
+ln -sf ~/VSC/colab/vc ~/.local/bin/vc
+
+# 4. Verify `vc` is ready
+vc help
 ```
-あみたろの声素材やコーパス読み上げ音声を使って音声モデルを作ったり、ボイスチェンジャーや声質変換などを使用して、自分の声をあみたろの声に変換して使うのもOKです。
 
-ただしその場合は絶対に、あみたろ（もしくは小春音アミ）の声に声質変換していることを明記し、あみたろ（および小春音アミ）が話しているわけではないことが誰でもわかるようにしてください。
-また、あみたろの声で話す内容は声素材の利用規約の範囲内のみとし、センシティブな発言などはしないでください。
-```
+### Step 5: First Run & Google Drive Mount
 
-- リアルタイムボイスチェンジャー黄琴まひろについては、れぷりかどーるの利用規約に準じます。詳細は[こちら](https://kikyohiroto1227.wixsite.com/kikoto-utau/ter%EF%BD%8Ds-of-service)
+1. Start Voice Changer on a Colab GPU (default `T4` for testing, or `--gpu A100` for production):
 
-## 免責事項
+   ```bash
+   vc up
+   # or: vc up --gpu A100
+   ```
 
-本ソフトウェアの使用または使用不能により生じたいかなる直接損害・間接損害・波及的損害・結果的損害 または特別損害についても、一切責任を負いません。
+   *On your first run on a new Colab runtime, `colab drivemount` will print a Google Drive OAuth URL. Open it in your Windows browser, click **Allow**, then return to WSL and press **Enter**.*
+
+2. Once `vc up` completes, open Windows Chrome or Edge at:
+   **[http://localhost:18888/front/](http://localhost:18888/front/)**
+   *(Always use `http://localhost:18888/front/` so the browser treats it as a Secure Context for microphone capture.)*
+
+3. **Add a custom RVC model** (persisted automatically to Google Drive `/content/drive/MyDrive/VoiceChanger/models/custom/`):
+
+   ```bash
+   vc add-model /mnt/d/path/to/model_folder
+   # Windows paths also work directly:
+   vc add-model "D:\path\to\model_folder"
+   ```
+
+4. **Stop when finished** (so you don't burn Colab compute units):
+
+   ```bash
+   vc down --stop-session
+   ```
+
+---
+
+## 3. Daily `vc` Command Reference
+
+| Command | Purpose |
+|---|---|
+| `vc up [--gpu T4\|A100\|L4]` | Provision/reuse GPU session, mount Drive, sync repo, setup `/content/vc_env`, start server, open SSH tunnel. |
+| `vc add-model <dir_or_pth> [--slot N]` | Upload a local `.pth` + `.index` model to the running server and persist it on Google Drive. |
+| `vc status` | Show session state, local SSH tunnel PID, GPU VRAM, Git SHA, and 7-point remote healthcheck. |
+| `vc logs [-f] [-n 100]` | View or follow `/content/vc_server.log` from Colab. |
+| `vc connect` | Re-establish the background SSH `LocalForward` (`localhost:18888 -> Colab:18888`). |
+| `vc down [--stop-session\|--keep-session]` | Stop remote server, close SSH tunnel, and optionally terminate the Colab VM. |
+
+---
+
+## 4. Documentation Index
+
+- [`wsl/README.md`](wsl/README.md) — Detailed WSL orchestration & `vc` CLI guide.
+- [`docs/deployment.md`](docs/deployment.md) — Colab deployment details and recommended UI settings (`T4`, `L4`, `G4`, `A100`, `H100`).
+- [`docs/architecture.md`](docs/architecture.md) — Three-layer architecture (Source, Persistence, Execution) and SSH tunnel topology.
+- [`docs/troubleshooting.md`](docs/troubleshooting.md) — Diagnostics and recovery procedures.
+- [`docs/audit-report.md`](docs/audit-report.md) — Phase 1 audit report and dependency compatibility matrix.
+- [`README_ori.md`](README_ori.md) — Original upstream `w-okada/voice-changer` README.

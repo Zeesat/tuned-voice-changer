@@ -1,0 +1,667 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# vc — WSL Orchestration CLI for Tuned Voice Changer on Google Colab GPU
+# ==============================================================================
+# Commands:
+#   vc up [--gpu T4|A100|L4] [-s <session>] [--connect|--no-connect]
+#   vc status [-s <session>]
+#   vc logs [-f] [-n <lines>] [-s <session>]
+#   vc connect [-s <session>] [--daemon|--foreground]
+#   vc down [-s <session>] [--stop-session|--keep-session]
+# ==============================================================================
+set -euo pipefail
+
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "${SCRIPT_SOURCE}" ]]; do
+    SCRIPT_DIR="$(cd -P "$(dirname "${SCRIPT_SOURCE}")" && pwd)"
+    SCRIPT_SOURCE="$(readlink "${SCRIPT_SOURCE}")"
+    [[ "${SCRIPT_SOURCE}" != /* ]] && SCRIPT_SOURCE="${SCRIPT_DIR}/${SCRIPT_SOURCE}"
+done
+ORCH_DIR="$(cd -P "$(dirname "${SCRIPT_SOURCE}")" && pwd)"
+
+if [[ -f "${ORCH_DIR}/.env" ]]; then
+    # shellcheck disable=SC1091
+    source "${ORCH_DIR}/.env"
+fi
+
+COLAB_BIN="${COLAB_BIN:-${HOME}/.local/bin/colab}"
+VC_GPU="${VC_GPU:-T4}"
+VC_SESSION="${VC_SESSION:-vc}"
+VC_PORT="${VC_PORT:-18888}"
+REPOSITORY_URL="${REPOSITORY_URL:-https://github.com/Zeesat/tuned-voice-changer.git}"
+REPOSITORY_REF="${REPOSITORY_REF:-master}"
+TUNNEL_PID_FILE="${ORCH_DIR}/.vc_tunnel.pid"
+SSH_KEY_PATH="${SSH_KEY_PATH:-${HOME}/.ssh/id_ed25519}"
+
+log_info()  { printf "\033[1;34m[vc][INFO]\033[0m  %s\n" "$*"; }
+log_ok()    { printf "\033[1;32m[vc][OK]\033[0m    %s\n" "$*"; }
+log_warn()  { printf "\033[1;33m[vc][WARN]\033[0m  %s\n" "$*"; }
+log_error() { printf "\033[1;31m[vc][ERROR]\033[0m %s\n" "$*" >&2; }
+
+ensure_colab_cli() {
+    if [[ ! -x "${COLAB_BIN}" ]]; then
+        log_error "google-colab-cli not found at ${COLAB_BIN}"
+        exit 1
+    fi
+}
+
+get_active_session() {
+    "${COLAB_BIN}" sessions 2>/dev/null | grep -F " | Hardware: " | sed -n 's/^\[\([^]?]*\)\] .*/\1/p' | head -n 1 || true
+}
+
+resolve_session() {
+    local requested="${1:-}"
+    if [[ -n "${requested}" ]]; then
+        echo "${requested}"
+        return 0
+    fi
+    local active
+    active="$(get_active_session)"
+    if [[ -n "${active}" ]]; then
+        echo "${active}"
+    else
+        echo "${VC_SESSION}"
+    fi
+}
+
+control_socket() {
+    local session="$1"
+    echo "${HOME}/.ssh/cm-root@colab-${session}:22"
+}
+
+remote_exec() {
+    local session="$1"
+    shift
+    mkdir -p "${HOME}/.ssh"
+    chmod 700 "${HOME}/.ssh"
+    local cpath
+    cpath="$(control_socket "${session}")"
+    ssh -i "${SSH_KEY_PATH}" \
+        -o "ProxyCommand=${COLAB_BIN} ssh --proxy-mode -s ${session}" \
+        -o "ControlMaster=auto" \
+        -o "ControlPath=${cpath}" \
+        -o "ControlPersist=yes" \
+        -o "StrictHostKeyChecking=no" \
+        -o "UserKnownHostsFile=/dev/null" \
+        -o "IdentitiesOnly=yes" \
+        -o "LocalForward=127.0.0.1:${VC_PORT} 127.0.0.1:${VC_PORT}" \
+        -o "ServerAliveInterval=15" \
+        -o "ServerAliveCountMax=4" \
+        -o "LogLevel=ERROR" \
+        "root@colab-${session}" "$@"
+}
+
+is_tunnel_active() {
+    if command -v ss >/dev/null 2>&1 && ss -tln | grep -q ":${VC_PORT} "; then
+        return 0
+    fi
+    return 1
+}
+
+stop_local_tunnel() {
+    local session="${1:-${VC_SESSION}}"
+    local cpath
+    cpath="$(control_socket "${session}")"
+    local stopped=0
+
+    if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active --quiet vc-ssh-tunnel 2>/dev/null; then
+        systemctl --user stop vc-ssh-tunnel 2>/dev/null || true
+        stopped=1
+    fi
+    if [[ -S "${cpath}" ]]; then
+        ssh -S "${cpath}" -O exit "root@colab-${session}" 2>/dev/null || true
+        rm -f "${cpath}"
+        stopped=1
+    fi
+    if [[ -f "${TUNNEL_PID_FILE}" ]]; then
+        local pid
+        pid="$(cat "${TUNNEL_PID_FILE}" 2>/dev/null || true)"
+        if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+            kill -TERM "${pid}" 2>/dev/null || true
+            stopped=1
+        fi
+        rm -f "${TUNNEL_PID_FILE}"
+    fi
+    if [[ "${stopped}" -eq 1 ]]; then
+        log_ok "Closed local SSH tunnel on port ${VC_PORT}."
+    fi
+}
+
+cmd_up() {
+    local gpu="${VC_GPU}"
+    local gpu_requested=0
+    local session=""
+    local auto_connect=1
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --gpu) gpu="${2^^}"; gpu_requested=1; shift 2 ;;
+            -s|--session) session="$2"; shift 2 ;;
+            --no-connect) auto_connect=0; shift ;;
+            --connect) auto_connect=1; shift ;;
+            *) log_error "Unknown option for 'vc up': $1"; exit 1 ;;
+        esac
+    done
+
+    ensure_colab_cli
+
+    # 1. Check / provision Colab GPU session
+    local active
+    active="$(get_active_session)"
+    local target_session="${session:-${active:-${VC_SESSION}}}"
+    local active_line
+    active_line="$("${COLAB_BIN}" sessions 2>/dev/null | grep -F " | Hardware: " | grep -F "[${target_session}] " | head -n 1 || true)"
+
+    if [[ -n "${active_line}" ]]; then
+        local current_hw
+        current_hw="$(printf '%s\n' "${active_line}" | grep -oE 'Hardware:[[:space:]]*[A-Za-z0-9_-]+' | awk '{print $2}' | head -n 1 || true)"
+        if [[ "${current_hw^^}" == "CPU" ]] || { [[ "${gpu_requested}" -eq 1 ]] && [[ -n "${current_hw}" ]] && [[ "${current_hw^^}" != "${gpu^^}" ]]; }; then
+            log_warn "Active session '${target_session}' is running on ${current_hw:-unknown}, but GPU ${gpu} is required."
+            log_info "Rotating Colab session '${target_session}' from ${current_hw:-unknown} -> ${gpu}..."
+            cmd_down -s "${target_session}" --stop-session
+            session="${target_session}"
+            log_info "Creating Colab ${gpu} GPU session '${session}'..."
+            "${COLAB_BIN}" new -s "${session}" --gpu "${gpu}"
+        else
+            session="${target_session}"
+            log_ok "Reusing active Colab session '${session}' (${current_hw:-${gpu}})."
+        fi
+    else
+        session="${target_session}"
+        rm -f "$(control_socket "${session}")"
+        log_info "Creating Colab ${gpu} GPU session '${session}'..."
+        "${COLAB_BIN}" new -s "${session}" --gpu "${gpu}"
+        sleep 2
+    fi
+
+    # 2. Ensure Google Drive is mounted at /content/drive
+    log_info "Checking Google Drive mount on session '${session}'..."
+    if ! remote_exec "${session}" "test -d /content/drive/MyDrive" >/dev/null 2>&1; then
+        log_info "Mounting Google Drive on session '${session}'..."
+        local mount_ok=0
+        for attempt in 1 2; do
+            if [[ -t 0 ]]; then
+                if "${COLAB_BIN}" drivemount -s "${session}" /content/drive; then
+                    mount_ok=1
+                    break
+                fi
+            else
+                if setsid "${COLAB_BIN}" drivemount -s "${session}" /content/drive </dev/null; then
+                    mount_ok=1
+                    break
+                fi
+            fi
+            log_warn "Drive mount attempt ${attempt} lost connection; waiting 3s and retrying..."
+            sleep 3
+        done
+        if [[ "${mount_ok}" -ne 1 ]]; then
+            log_error "Failed to mount Google Drive on session '${session}'."
+            exit 1
+        fi
+    else
+        log_ok "Google Drive is already mounted at /content/drive/MyDrive."
+    fi
+
+    # 3. Clone/update repository & run prepare_workspace.sh
+    log_info "Synchronizing repository (${REPOSITORY_URL} @ ${REPOSITORY_REF}) and preparing persistent workspace..."
+    remote_exec "${session}" "
+        set -euo pipefail
+        export REPOSITORY_URL='${REPOSITORY_URL}'
+        export REPOSITORY_REF='${REPOSITORY_REF}'
+        if [[ ! -d /content/voice-changer/.git ]]; then
+            rm -rf /content/voice-changer
+            git clone \"\${REPOSITORY_URL}\" /content/voice-changer
+            git -C /content/voice-changer checkout \"\${REPOSITORY_REF}\"
+        fi
+        bash /content/voice-changer/deployment/colab/prepare_workspace.sh
+    "
+
+    # 4. Provision / verify Python 3.10 + CUDA runtime
+    log_info "Provisioning / verifying Python 3.10 + CUDA runtime environment (/content/vc_env)..."
+    remote_exec "${session}" "bash /content/voice-changer/deployment/colab/setup_runtime.sh"
+
+    # 5. Start Voice Changer server
+    log_info "Starting Voice Changer server on 127.0.0.1:${VC_PORT}..."
+    remote_exec "${session}" "bash /content/voice-changer/deployment/colab/start_server.sh --daemon"
+
+    # 6. Run remote healthcheck
+    log_info "Running remote server healthcheck..."
+    remote_exec "${session}" "bash /content/voice-changer/deployment/colab/healthcheck.sh"
+
+    # 7. Ensure SSH LocalForward tunnel is active
+    if [[ "${auto_connect}" -eq 1 ]]; then
+        cmd_connect -s "${session}" --daemon
+    fi
+
+    log_ok "Tuned Voice Changer is UP and ready at: http://localhost:${VC_PORT}"
+}
+
+cmd_connect() {
+    local session=""
+    local mode="daemon"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -s|--session) session="$2"; shift 2 ;;
+            --daemon|--background) mode="daemon"; shift ;;
+            --foreground) mode="foreground"; shift ;;
+            *) log_error "Unknown option for 'vc connect': $1"; exit 1 ;;
+        esac
+    done
+
+    ensure_colab_cli
+    session="$(resolve_session "${session}")"
+
+    if [[ ! -f "${SSH_KEY_PATH}" ]]; then
+        log_error "SSH private key not found at ${SSH_KEY_PATH}"
+        exit 1
+    fi
+
+    mkdir -p "${HOME}/.ssh"
+    chmod 700 "${HOME}/.ssh"
+    local cpath
+    cpath="$(control_socket "${session}")"
+
+    if [[ "${mode}" == "foreground" ]]; then
+        stop_local_tunnel "${session}"
+        log_info "Establishing foreground SSH LocalForward http://localhost:${VC_PORT} -> Colab(${session}):${VC_PORT} (Ctrl+C to disconnect)..."
+        exec ssh -i "${SSH_KEY_PATH}" \
+            -o "ProxyCommand=${COLAB_BIN} ssh --proxy-mode -s ${session}" \
+            -o "StrictHostKeyChecking=no" \
+            -o "UserKnownHostsFile=/dev/null" \
+            -o "IdentitiesOnly=yes" \
+            -o "ExitOnForwardFailure=yes" \
+            -o "ServerAliveInterval=15" \
+            -o "ServerAliveCountMax=4" \
+            -o "LogLevel=ERROR" \
+            -N -L "127.0.0.1:${VC_PORT}:127.0.0.1:${VC_PORT}" \
+            "root@colab-${session}"
+    fi
+
+    if is_tunnel_active; then
+        log_ok "SSH LocalForward tunnel is already active on http://localhost:${VC_PORT}."
+        return 0
+    fi
+
+    log_info "Starting background SSH ControlMaster + LocalForward on 127.0.0.1:${VC_PORT} -> Colab(${session}):${VC_PORT}..."
+    rm -f "${cpath}"
+    if command -v systemd-run >/dev/null 2>&1 && systemctl --user is-system-running >/dev/null 2>&1; then
+        systemctl --user stop vc-ssh-tunnel 2>/dev/null || true
+        systemd-run --user --unit=vc-ssh-tunnel --collect \
+            ssh -N \
+            -i "${SSH_KEY_PATH}" \
+            -o "ProxyCommand=${COLAB_BIN} ssh --proxy-mode -s ${session}" \
+            -o "ControlMaster=yes" \
+            -o "ControlPath=${cpath}" \
+            -o "ControlPersist=no" \
+            -o "StrictHostKeyChecking=no" \
+            -o "UserKnownHostsFile=/dev/null" \
+            -o "IdentitiesOnly=yes" \
+            -o "ExitOnForwardFailure=yes" \
+            -o "LocalForward=127.0.0.1:${VC_PORT} 127.0.0.1:${VC_PORT}" \
+            -o "ServerAliveInterval=15" \
+            -o "ServerAliveCountMax=4" \
+            -o "LogLevel=ERROR" \
+            "root@colab-${session}" >/dev/null 2>&1
+    else
+        setsid ssh -f -N \
+            -i "${SSH_KEY_PATH}" \
+            -o "ProxyCommand=${COLAB_BIN} ssh --proxy-mode -s ${session}" \
+            -o "ControlMaster=auto" \
+            -o "ControlPath=${cpath}" \
+            -o "ControlPersist=yes" \
+            -o "StrictHostKeyChecking=no" \
+            -o "UserKnownHostsFile=/dev/null" \
+            -o "IdentitiesOnly=yes" \
+            -o "ExitOnForwardFailure=yes" \
+            -o "LocalForward=127.0.0.1:${VC_PORT} 127.0.0.1:${VC_PORT}" \
+            -o "ServerAliveInterval=15" \
+            -o "ServerAliveCountMax=4" \
+            -o "LogLevel=ERROR" \
+            "root@colab-${session}" </dev/null >/dev/null 2>&1 || true
+    fi
+
+    for _ in {1..10}; do
+        if is_tunnel_active; then
+            local tpid
+            tpid="$(pgrep -f "colab-${session}" | head -n 1 || true)"
+            if [[ -n "${tpid}" ]]; then
+                echo "${tpid}" > "${TUNNEL_PID_FILE}"
+            fi
+            log_ok "SSH tunnel active (PID: ${tpid:-unknown}). Access Voice Changer at http://localhost:${VC_PORT}"
+            return 0
+        fi
+        sleep 1
+    done
+
+    log_error "SSH tunnel failed to bind local port ${VC_PORT}."
+    exit 1
+}
+
+cmd_status() {
+    local session=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -s|--session) session="$2"; shift 2 ;;
+            *) log_error "Unknown option for 'vc status': $1"; exit 1 ;;
+        esac
+    done
+
+    ensure_colab_cli
+    printf "\033[1;34m=== 1. Colab Session Status ===\033[0m\n"
+    local active
+    active="$(get_active_session)"
+    if [[ -z "${active}" ]]; then
+        echo "  No active Colab sessions."
+        return 0
+    fi
+    session="${session:-${active}}"
+    "${COLAB_BIN}" status -s "${session}"
+
+    printf "\n\033[1;34m=== 2. Local SSH Tunnel Status (localhost:%s) ===\033[0m\n" "${VC_PORT}"
+    if is_tunnel_active; then
+        local tpid
+        tpid="$(pgrep -f "colab-${session}" | head -n 1 || true)"
+        printf "  \033[1;32m[ACTIVE]\033[0m Forwarding http://localhost:%s -> Colab(%s):%s (PID: %s)\n" "${VC_PORT}" "${session}" "${VC_PORT}" "${tpid:-unknown}"
+    else
+        printf "  \033[1;33m[INACTIVE]\033[0m Local port %s is not forwarded (run 'vc connect')\n" "${VC_PORT}"
+    fi
+
+    printf "\n\033[1;34m=== 3. Remote Runtime & Healthcheck ===\033[0m\n"
+    remote_exec "${session}" "
+        echo \"  GPU Hardware : \$(nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv,noheader 2>/dev/null || echo 'N/A')\"
+        if [[ -d /content/voice-changer/.git ]]; then
+            echo \"  Repo Revision: \$(git -C /content/voice-changer rev-parse --short HEAD) (\$(git -C /content/voice-changer rev-parse --abbrev-ref HEAD))\"
+        else
+            echo \"  Repo Revision: not cloned\"
+        fi
+        echo \"\"
+        if [[ -f /content/voice-changer/deployment/colab/healthcheck.sh ]]; then
+            bash /content/voice-changer/deployment/colab/healthcheck.sh
+        fi
+    "
+}
+
+cmd_logs() {
+    local session=""
+    local follow=0
+    local lines=60
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -s|--session) session="$2"; shift 2 ;;
+            -f|--follow) follow=1; shift ;;
+            -n|--lines) lines="$2"; shift 2 ;;
+            *) log_error "Unknown option for 'vc logs': $1"; exit 1 ;;
+        esac
+    done
+
+    ensure_colab_cli
+    session="$(resolve_session "${session}")"
+
+    if [[ "${follow}" -eq 1 ]]; then
+        remote_exec "${session}" "tail -n ${lines} -f /content/vc_server.log /content/voice-changer/server/vcclient.log 2>/dev/null"
+    else
+        remote_exec "${session}" "
+            if [[ -f /content/vc_server.log ]]; then
+                echo '=== /content/vc_server.log ==='
+                tail -n ${lines} /content/vc_server.log
+            else
+                echo 'No /content/vc_server.log found on remote runtime.'
+            fi
+        "
+    fi
+}
+
+cmd_down() {
+    local session=""
+    local stop_session="prompt"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -s|--session) session="$2"; shift 2 ;;
+            --stop-session) stop_session="yes"; shift ;;
+            --keep-session) stop_session="no"; shift ;;
+            *) log_error "Unknown option for 'vc down': $1"; exit 1 ;;
+        esac
+    done
+
+    ensure_colab_cli
+
+    local active
+    active="$(get_active_session)"
+    if [[ -z "${active}" ]]; then
+        stop_local_tunnel "${session:-${VC_SESSION}}"
+        log_ok "No active Colab session is running."
+        return 0
+    fi
+    session="${session:-${active}}"
+
+    # 1. Stop remote Voice Changer server cleanly over ControlMaster
+    log_info "Stopping remote Voice Changer server on session '${session}'..."
+    remote_exec "${session}" "
+        if [[ -f /content/voice-changer/deployment/colab/stop_server.sh ]]; then
+            bash /content/voice-changer/deployment/colab/stop_server.sh
+        fi
+    " || true
+
+    # 2. Close local SSH ControlMaster & tunnel
+    stop_local_tunnel "${session}"
+
+    # 3. Optionally terminate the Colab runtime
+    if [[ "${stop_session}" == "yes" ]]; then
+        log_info "Terminating Colab session '${session}'..."
+        "${COLAB_BIN}" stop -s "${session}"
+        log_ok "Colab session '${session}' terminated."
+    elif [[ "${stop_session}" == "no" ]]; then
+        log_ok "Colab session '${session}' kept alive (run 'vc down --stop-session' to release GPU)."
+    else
+        if [[ -t 0 ]]; then
+            read -r -p "[vc] Also terminate Colab GPU session '${session}' to stop compute unit usage? [y/N]: " ans
+            if [[ "${ans}" =~ ^[Yy]$ ]]; then
+                "${COLAB_BIN}" stop -s "${session}"
+                log_ok "Colab session '${session}' terminated."
+            else
+                log_ok "Colab session '${session}' kept alive."
+            fi
+        else
+            log_ok "Remote server stopped. Session '${session}' kept alive (pass --stop-session to terminate VM)."
+        fi
+    fi
+}
+
+cmd_add_model() {
+    local target=""
+    local index_override=""
+    local slot=""
+    local is_half="true"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --slot)       slot="${2:-}"; shift 2 ;;
+            --index)      index_override="${2:-}"; shift 2 ;;
+            --half)       is_half="true"; shift ;;
+            --no-half)    is_half="false"; shift ;;
+            -h|--help)
+                cat <<'EOF'
+Usage: vc add-model <model_dir_or_pth> [--slot <N>] [--index <file.index>] [--half|--no-half]
+
+Uploads a local RVC model (.pth + optional .index) to the running Voice Changer
+server via http://127.0.0.1:18888, registers it into a model slot, and persists
+it to Google Drive (/content/drive/MyDrive/VoiceChanger/models/custom/<slot>/).
+EOF
+                return 0
+                ;;
+            -*)
+                log_error "Unknown option for add-model: $1"; exit 1 ;;
+            *)
+                if [[ -z "${target}" ]]; then
+                    target="$1"
+                else
+                    log_error "Unexpected argument: $1"; exit 1
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "${target}" ]]; then
+        log_error "Missing model path. Usage: vc add-model <model_dir_or_pth> [--slot <N>]"
+        exit 1
+    fi
+
+    # Convert Windows paths (e.g. D:\VSC\colab\zetaTest) to WSL paths if needed
+    if [[ "${target}" =~ ^[A-Za-z]:[\\/] ]] && command -v wslpath >/dev/null 2>&1; then
+        target="$(wslpath -u "${target}")"
+    fi
+    if [[ -n "${index_override}" && "${index_override}" =~ ^[A-Za-z]:[\\/] ]] && command -v wslpath >/dev/null 2>&1; then
+        index_override="$(wslpath -u "${index_override}")"
+    fi
+
+    local pth_file=""
+    local index_file=""
+
+    if [[ -d "${target}" ]]; then
+        mapfile -t pth_matches < <(find "${target}" -maxdepth 1 -type f -name '*.pth' | sort)
+        if [[ ${#pth_matches[@]} -eq 0 ]]; then
+            log_error "No .pth file found in directory: ${target}"
+            exit 1
+        elif [[ ${#pth_matches[@]} -gt 1 ]]; then
+            log_error "Multiple .pth files found in ${target}; pass the specific .pth file path instead."
+            exit 1
+        fi
+        pth_file="${pth_matches[0]}"
+
+        if [[ -z "${index_override}" ]]; then
+            mapfile -t idx_matches < <(find "${target}" -maxdepth 1 -type f -name '*.index' | sort)
+            if [[ ${#idx_matches[@]} -gt 0 ]]; then
+                index_file="${idx_matches[0]}"
+            fi
+        fi
+    elif [[ -f "${target}" ]]; then
+        pth_file="${target}"
+        if [[ -z "${index_override}" ]]; then
+            local parent_dir
+            parent_dir="$(dirname "${pth_file}")"
+            mapfile -t idx_matches < <(find "${parent_dir}" -maxdepth 1 -type f -name '*.index' | sort)
+            if [[ ${#idx_matches[@]} -gt 0 ]]; then
+                index_file="${idx_matches[0]}"
+            fi
+        fi
+    else
+        log_error "Model path not found: ${target}"
+        exit 1
+    fi
+
+    if [[ -n "${index_override}" ]]; then
+        if [[ ! -f "${index_override}" ]]; then
+            log_error "Index file not found: ${index_override}"
+            exit 1
+        fi
+        index_file="${index_override}"
+    fi
+
+    local base_url="http://127.0.0.1:${VC_PORT}"
+    local info_json=""
+    if ! info_json="$(curl -fsS "${base_url}/info" 2>/dev/null)"; then
+        log_error "Cannot reach Voice Changer server at ${base_url}. Run 'vc up' or 'vc connect' first."
+        exit 1
+    fi
+
+    if [[ -z "${slot}" ]]; then
+        slot="$(python3 -c '
+import json, sys
+info = json.loads(sys.argv[1])
+for s in info.get("modelSlots", []):
+    if not s.get("modelFile") and not s.get("voiceChangerType"):
+        print(s.get("slot", ""))
+        sys.exit(0)
+sys.exit(1)
+' "${info_json}" || true)"
+        if [[ -z "${slot}" ]]; then
+            log_error "No empty model slot found. Specify one explicitly with --slot <N>."
+            exit 1
+        fi
+        log_info "Auto-selected empty slot ${slot}."
+    fi
+
+    local pth_base
+    pth_base="$(basename "${pth_file}")"
+    log_info "Uploading model weights: ${pth_base} ..."
+    curl -fsS -X POST "${base_url}/upload_file" \
+        -F "file=@${pth_file}" \
+        -F "filename=${pth_base}" >/dev/null
+
+    local index_base=""
+    if [[ -n "${index_file}" ]]; then
+        index_base="$(basename "${index_file}")"
+        log_info "Uploading index file: ${index_base} ..."
+        curl -fsS -X POST "${base_url}/upload_file" \
+            -F "file=@${index_file}" \
+            -F "filename=${index_base}" >/dev/null
+    else
+        log_warn "No .index file found; loading model without index."
+    fi
+
+    local params_json
+    params_json="$(python3 -c '
+import json, sys
+slot = int(sys.argv[1])
+pth_base = sys.argv[2]
+index_base = sys.argv[3]
+files = [{"name": pth_base, "kind": "rvcModel", "dir": ""}]
+if index_base:
+    files.append({"name": index_base, "kind": "rvcIndex", "dir": ""})
+payload = {
+    "voiceChangerType": "RVC",
+    "slot": slot,
+    "isSampleMode": False,
+    "sampleId": "",
+    "files": files,
+    "params": {},
+}
+print(json.dumps(payload))
+' "${slot}" "${pth_base}" "${index_base}")"
+
+    log_info "Registering model in slot ${slot} (isHalf=${is_half})..."
+    curl -fsS -X POST "${base_url}/load_model" \
+        -F "slot=${slot}" \
+        -F "isHalf=${is_half}" \
+        -F "params=${params_json}" >/dev/null
+
+    log_ok "Model '${pth_base}' loaded into slot ${slot} and persisted on Google Drive (/content/drive/MyDrive/VoiceChanger/models/custom/${slot}/)."
+}
+
+usage() {
+    cat <<'EOF'
+Usage: vc <command> [options]
+
+Commands:
+  up        Provision/reuse Colab GPU, mount Drive, prepare workspace, setup env, start server, and connect tunnel
+            Options: [--gpu T4|A100|L4] [-s <session>] [--no-connect]
+  add-model Upload a local RVC model (.pth + optional .index) to a slot on the running server & persist to Drive
+            Options: <model_dir_or_pth> [--slot <N>] [--index <file.index>] [--half|--no-half]
+  status    Show Colab session, local SSH tunnel, GPU hardware, repo revision, and healthcheck status
+            Options: [-s <session>]
+  logs      Fetch remote Voice Changer server logs
+            Options: [-f|--follow] [-n <lines>] [-s <session>]
+  connect   Establish SSH LocalForward (http://localhost:18888 -> Colab:18888)
+            Options: [--daemon|--foreground] [-s <session>]
+  down      Stop remote Voice Changer server cleanly, close SSH tunnel, and optionally stop Colab runtime
+            Options: [--stop-session|--keep-session] [-s <session>]
+EOF
+}
+
+COMMAND="${1:-help}"
+shift || true
+
+case "${COMMAND}" in
+    up)        cmd_up "$@" ;;
+    add-model) cmd_add_model "$@" ;;
+    status)    cmd_status "$@" ;;
+    logs)      cmd_logs "$@" ;;
+    connect)   cmd_connect "$@" ;;
+    down)      cmd_down "$@" ;;
+    help|-h|--help) usage ;;
+    *) log_error "Unknown command: ${COMMAND}"; usage; exit 1 ;;
+esac
